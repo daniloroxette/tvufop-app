@@ -1,0 +1,90 @@
+name: Update HLS when manifest_url.txt changes
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "manifest_url.txt"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read manifest URL
+        id: m
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f manifest_url.txt ]; then
+            echo "manifest_url.txt não encontrado."
+            exit 1
+          fi
+          MANIFEST_URL="$(cat manifest_url.txt | tr -d '\r' | head -n 1 | xargs)"
+          if [ -z "$MANIFEST_URL" ]; then
+            echo "manifest_url.txt está vazio."
+            exit 1
+          fi
+          echo "manifest_url=$MANIFEST_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Generate expanded m3u8
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re, os, urllib.request
+
+          manifest_url = "${{ steps.m.outputs.manifest_url }}".strip()
+
+          if not manifest_url.startswith("http"):
+            raise SystemExit("manifest_url inválida (não parece URL).")
+          if "/manifest/" not in manifest_url:
+            raise SystemExit("A URL precisa conter /manifest/ (ex.: .../manifest/video.m3u8).")
+
+          base = manifest_url.split("/manifest/", 1)[0] + "/manifest/"
+
+          with urllib.request.urlopen(manifest_url) as r:
+            raw = r.read().decode("utf-8", errors="replace")
+
+          uri_re = re.compile(r'URI="([^"]+)"')
+          out = []
+
+          for line in raw.splitlines():
+            line = line.rstrip("\r\n")
+
+            # Ajusta URI="..." dentro de tags (#EXT-X-MEDIA etc.)
+            def repl(m):
+              u = m.group(1)
+              return f'URI="{u}"' if u.startswith("http") else f'URI="{base}{u}"'
+            line = uri_re.sub(repl, line)
+
+            if line.startswith("#") or line.strip() == "":
+              out.append(line)
+            else:
+              out.append(line if line.startswith("http") else (base + line))
+
+          os.makedirs("hls", exist_ok=True)
+          with open("hls/tvufop.m3u8", "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(out) + "\n")
+
+          print("OK: hls/tvufop.m3u8 atualizado a partir de:", manifest_url)
+          PY
+
+      - name: Commit and push if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Sem mudanças no hls/tvufop.m3u8."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hls/tvufop.m3u8
+          git commit -m "Update HLS from manifest_url.txt"
+          git push
