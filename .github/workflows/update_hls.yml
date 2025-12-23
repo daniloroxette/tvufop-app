@@ -33,11 +33,11 @@ jobs:
           fi
           echo "manifest_url=$MANIFEST_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Generate expanded m3u8
+      - name: Generate expanded m3u8 (no-cache + cache-buster + normalize llhlsHBs)
         shell: bash
         run: |
           python3 - <<'PY'
-          import re, os, urllib.request
+          import os, re, time, urllib.parse, urllib.request
 
           manifest_url = "${{ steps.m.outputs.manifest_url }}".strip()
 
@@ -48,25 +48,48 @@ jobs:
 
           base = manifest_url.split("/manifest/", 1)[0] + "/manifest/"
 
-          with urllib.request.urlopen(manifest_url) as r:
+          # Cache-buster + headers no-cache (reduz variação por cache)
+          p = urllib.parse.urlsplit(manifest_url)
+          qs2 = (p.query + "&" if p.query else "") + f"_cb={int(time.time())}"
+          fetch_url = urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, qs2, p.fragment))
+
+          req = urllib.request.Request(
+            fetch_url,
+            headers={
+              "Cache-Control": "no-cache",
+              "Pragma": "no-cache",
+              "User-Agent": "Mozilla/5.0"
+            }
+          )
+
+          with urllib.request.urlopen(req) as r:
             raw = r.read().decode("utf-8", errors="replace")
 
           uri_re = re.compile(r'URI="([^"]+)"')
+          hb_re  = re.compile(r'(llhlsHBs=)[0-9.]+')
+
           out = []
 
           for line in raw.splitlines():
             line = line.rstrip("\r\n")
 
+            # Normaliza llhlsHBs para 0.9 (evita 0.5/0.9 alternando)
+            line = hb_re.sub(r"\g<1>0.9", line)
+
             # Ajusta URI="..." dentro de tags (#EXT-X-MEDIA etc.)
             def repl(m):
               u = m.group(1)
+              u = hb_re.sub(r"\g<1>0.9", u)
               return f'URI="{u}"' if u.startswith("http") else f'URI="{base}{u}"'
             line = uri_re.sub(repl, line)
 
             if line.startswith("#") or line.strip() == "":
               out.append(line)
             else:
-              out.append(line if line.startswith("http") else (base + line))
+              # Linha de playlist relativa vira absoluta
+              if not line.startswith("http"):
+                line = base + line
+              out.append(line)
 
           os.makedirs("hls", exist_ok=True)
           with open("hls/tvufop.m3u8", "w", encoding="utf-8", newline="\n") as f:
