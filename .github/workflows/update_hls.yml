@@ -26,25 +26,29 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f manifest_url.txt ]; then
-            echo "manifest_url.txt não encontrado."
+            echo "manifest_url.txt não encontrado na raiz do repo."
+            ls -la
             exit 1
           fi
+
           MANIFEST_URL="$(cat manifest_url.txt | tr -d '\r' | head -n 1 | xargs)"
           if [ -z "$MANIFEST_URL" ]; then
             echo "manifest_url.txt está vazio."
             exit 1
           fi
-          echo "manifest_url=$MANIFEST_URL" >> "$GITHUB_OUTPUT"
-          echo "Manifest URL: $MANIFEST_URL"
 
-      - name: Generate expanded m3u8 (single-variant | prefer 1080p | no-cache + cache-buster + normalize llhlsHBs)
+          echo "manifest_url=$MANIFEST_URL" >> "$GITHUB_OUTPUT"
+          echo "Manifest URL = $MANIFEST_URL"
+
+      - name: Generate expanded m3u8 (single-variant | prefer 1080p)
         shell: bash
         run: |
+          set -euo pipefail
+
           python3 - <<'PY'
           import os, re, time, urllib.parse, urllib.request
 
           manifest_url = "${{ steps.m.outputs.manifest_url }}".strip()
-
           if not manifest_url.startswith("http"):
             raise SystemExit("manifest_url inválida (não parece URL).")
           if "/manifest/" not in manifest_url:
@@ -68,7 +72,7 @@ jobs:
           )
 
           try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=25) as r:
               raw = r.read().decode("utf-8", errors="replace")
           except Exception as e:
             raise SystemExit(f"Falha ao baixar manifest: {manifest_url}\nErro: {e}")
@@ -79,3 +83,112 @@ jobs:
           uri_re = re.compile(r'URI="([^"]+)"')
           res_re = re.compile(r'RESOLUTION=(\d+)x(\d+)')
           bw_re  = re.compile(r'BANDWIDTH=(\d+)')
+
+          def norm_hb(s: str) -> str:
+            return hb_re.sub(r"\g<1>0.9", s)
+
+          def absolutize(u: str) -> str:
+            u = norm_hb(u)
+            return u if u.startswith("http") else (base + u)
+
+          # Cabeçalho
+          out = ["#EXTM3U"]
+          for tag in ("#EXT-X-VERSION", "#EXT-X-INDEPENDENT-SEGMENTS"):
+            for l in lines:
+              if l.startswith(tag):
+                out.append(norm_hb(l))
+                break
+
+          # Áudio(s)
+          for l in lines:
+            if l.startswith("#EXT-X-MEDIA:"):
+              l2 = norm_hb(l)
+              def repl(m):
+                return f'URI="{absolutize(m.group(1))}"'
+              l2 = uri_re.sub(repl, l2)
+              out.append(l2)
+
+          # Variants
+          variants = []
+          i = 0
+          while i < len(lines):
+            l = lines[i]
+            if l.startswith("#EXT-X-STREAM-INF:"):
+              streaminf = norm_hb(l)
+              j = i + 1
+              while j < len(lines) and (lines[j].strip() == "" or lines[j].startswith("#")):
+                j += 1
+              if j >= len(lines):
+                break
+
+              uri = absolutize(lines[j].strip())
+
+              mres = res_re.search(streaminf)
+              w = h = 0
+              if mres:
+                w, h = int(mres.group(1)), int(mres.group(2))
+              mbw = bw_re.search(streaminf)
+              bw = int(mbw.group(1)) if mbw else 0
+
+              variants.append((w, h, bw, streaminf, uri))
+              i = j
+            i += 1
+
+          if not variants:
+            preview = "\n".join(lines[:40])
+            raise SystemExit("Nenhum variant encontrado no manifest.\nPrévia:\n" + preview)
+
+          found = ", ".join([f"{w}x{h}" if w and h else "sem-res" for (w,h,_,_,_) in variants])
+          print("Variants encontrados:", found)
+
+          # Escolha: 1080p se existir, senão maior por área e desempata por bandwidth
+          chosen = None
+          for v in variants:
+            if v[0] == 1920 and v[1] == 1080:
+              chosen = v
+              print("Escolhido: 1920x1080 (preferência).")
+              break
+          if chosen is None:
+            chosen = max(variants, key=lambda x: (x[0]*x[1], x[2]))
+            print(f"1080p não disponível. Fallback para: {chosen[0]}x{chosen[1]} (bw={chosen[2]}).")
+
+          w, h, bw, streaminf, uri = chosen
+          out.append(streaminf)
+          out.append(uri)
+
+          os.makedirs("hls", exist_ok=True)
+          with open("hls/tvufop.m3u8", "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(out) + "\n")
+
+          print("OK: hls/tvufop.m3u8 atualizado a partir de:", manifest_url)
+          PY
+
+      - name: Show diff (debug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== git status ==="
+          git status --porcelain
+          echo "=== head of hls/tvufop.m3u8 ==="
+          sed -n '1,30p' hls/tvufop.m3u8 || true
+
+      - name: Commit and push if changed
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- hls/tvufop.m3u8; then
+            echo "Sem mudanças no hls/tvufop.m3u8 (nada para commitar)."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add hls/tvufop.m3u8
+          git commit -m "Update tvufop.m3u8 from manifest_url.txt"
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:main
