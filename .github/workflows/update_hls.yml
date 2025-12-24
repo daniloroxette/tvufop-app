@@ -1,4 +1,4 @@
-name: Update HLS (1080p only) when manifest_url.txt changes
+name: Update HLS (prefer 1080p) when manifest_url.txt changes
 
 on:
   push:
@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Read manifest URL
         id: m
@@ -32,8 +35,9 @@ jobs:
             exit 1
           fi
           echo "manifest_url=$MANIFEST_URL" >> "$GITHUB_OUTPUT"
+          echo "Manifest URL: $MANIFEST_URL"
 
-      - name: Generate expanded m3u8 (1080p only | no-cache + cache-buster + normalize llhlsHBs)
+      - name: Generate expanded m3u8 (single-variant | prefer 1080p | no-cache + cache-buster + normalize llhlsHBs)
         shell: bash
         run: |
           python3 - <<'PY'
@@ -46,10 +50,9 @@ jobs:
           if "/manifest/" not in manifest_url:
             raise SystemExit("A URL precisa conter /manifest/ (ex.: .../manifest/video.m3u8).")
 
-          # Base: https://.../<VIDEO_ID>/manifest/
           base = manifest_url.split("/manifest/", 1)[0] + "/manifest/"
 
-          # Cache-buster + headers no-cache (reduz variação por cache)
+          # Cache-buster + headers no-cache
           p = urllib.parse.urlsplit(manifest_url)
           qs2 = (p.query + "&" if p.query else "") + f"_cb={int(time.time())}"
           fetch_url = urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, qs2, p.fragment))
@@ -57,105 +60,22 @@ jobs:
           req = urllib.request.Request(
             fetch_url,
             headers={
+              "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, text/plain, */*",
               "Cache-Control": "no-cache",
               "Pragma": "no-cache",
               "User-Agent": "Mozilla/5.0"
             }
           )
 
-          with urllib.request.urlopen(req) as r:
-            raw = r.read().decode("utf-8", errors="replace")
-
-          # Normaliza llhlsHBs sempre para 0.9
-          hb_re  = re.compile(r'(llhlsHBs=)[0-9.]+')
-          uri_re = re.compile(r'URI="([^"]+)"')
-
-          def norm_hb(s: str) -> str:
-            return hb_re.sub(r"\g<1>0.9", s)
-
-          def absolutize(u: str) -> str:
-            u = norm_hb(u)
-            return u if u.startswith("http") else (base + u)
+          try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+              raw = r.read().decode("utf-8", errors="replace")
+          except Exception as e:
+            raise SystemExit(f"Falha ao baixar manifest: {manifest_url}\nErro: {e}")
 
           lines = [l.rstrip("\r\n") for l in raw.splitlines()]
 
-          out = []
-          want_1080 = False
-          found_1080 = False
-
-          # 1) Copia cabeçalhos essenciais (se existirem no arquivo fonte)
-          # (mantém compatibilidade com o que a origem fornece)
-          for l in lines:
-            if l.startswith("#EXTM3U"):
-              out.append("#EXTM3U")
-              break
-          else:
-            out.append("#EXTM3U")
-
-          # Inclui VERSION / INDEPENDENT-SEGMENTS se existirem
-          for tag in ("#EXT-X-VERSION", "#EXT-X-INDEPENDENT-SEGMENTS"):
-            for l in lines:
-              if l.startswith(tag):
-                out.append(norm_hb(l))
-                break
-
-          # 2) Copia todas as linhas #EXT-X-MEDIA (áudio), com URI absolutizada
-          for l in lines:
-            if l.startswith("#EXT-X-MEDIA:"):
-              l2 = norm_hb(l)
-
-              def repl(m):
-                u = m.group(1)
-                return f'URI="{absolutize(u)}"'
-              l2 = uri_re.sub(repl, l2)
-
-              out.append(l2)
-
-          # 3) Seleciona apenas o variant 1920x1080 e sua URI subsequente
-          i = 0
-          while i < len(lines):
-            l = lines[i]
-
-            if l.startswith("#EXT-X-STREAM-INF:"):
-              l2 = norm_hb(l)
-
-              # Confere RESOLUTION=1920x1080
-              # (evita depender da ordem de atributos)
-              if "RESOLUTION=1920x1080" in l2:
-                out.append(l2)
-                # Próxima linha deve ser a URI do playlist do variant
-                j = i + 1
-                while j < len(lines) and (lines[j].strip() == "" or lines[j].startswith("#")):
-                  j += 1
-                if j >= len(lines):
-                  raise SystemExit("Encontrou STREAM-INF 1080p, mas não encontrou a URI do variant logo em seguida.")
-                out.append(absolutize(lines[j].strip()))
-                found_1080 = True
-                break
-
-            i += 1
-
-          if not found_1080:
-            raise SystemExit("Não encontrei variant 1920x1080 no manifest. A Action foi interrompida para evitar publicar m3u8 inválido.")
-
-          # 4) Grava no caminho usado pelos apps
-          os.makedirs("hls", exist_ok=True)
-          with open("hls/tvufop.m3u8", "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(out) + "\n")
-
-          print("OK: hls/tvufop.m3u8 (1080p only) atualizado a partir de:", manifest_url)
-          PY
-
-      - name: Commit and push if changed
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet; then
-            echo "Sem mudanças no hls/tvufop.m3u8."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add hls/tvufop.m3u8
-          git commit -m "Update HLS (1080p only) from manifest_url.txt"
-          git push
+          hb_re  = re.compile(r'(llhlsHBs=)[0-9.]+')
+          uri_re = re.compile(r'URI="([^"]+)"')
+          res_re = re.compile(r'RESOLUTION=(\d+)x(\d+)')
+          bw_re  = re.compile(r'BANDWIDTH=(\d+)')
