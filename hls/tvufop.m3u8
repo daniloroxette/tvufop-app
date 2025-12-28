@@ -1,6 +1,6 @@
 #EXTM3U
 #EXT-X-VERSION:6
 #EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_audio",NAME="original",LANGUAGE="en-03f5cd79",DEFAULT=YES,AUTOSELECT=YES,URI="https://customer-bxj0pbwaaik2la0k.cloudflarestream.com/5679df4f90f7dcc191928667e727ebab/manifest/stream_t03f5cd79fde3f190b6fe02213ca8fc29_r1360206123.m3u8?llhlsHBs=0.9"
-#EXT-X-STREAM-INF:RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",BANDWIDTH=4040236,AVERAGE-BANDWIDTH=4040236,SCORE=5.0,FRAME-RATE=30.000,AUDIO="group_audio"
-https://customer-bxj0pbwaaik2la0k.cloudflarestream.com/5679df4f90f7dcc191928667e727ebab/manifest/stream_t407c9c00ff64a978d58a363f77c7fba1_r1360206122.m3u8?llhlsHBs=0.9
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_audio",NAME="original",LANGUAGE="en-197526c1",DEFAULT=YES,AUTOSELECT=YES,URI="https://customer-bxj0pbwaaik2la0k.cloudflarestream.com/aa185f2fb87f4604697fe6c75fc6499d/manifest/stream_t197526c1e47e55624d75597f6e808c2c_r1361560518.m3u8?llhlsHBs=0.9"
+#EXT-X-STREAM-INF:RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2",BANDWIDTH=3842062,AVERAGE-BANDWIDTH=3842062,SCORE=5.0,FRAME-RATE=30.000,AUDIO="group_audio"
+https://customer-bxj0pbwaaik2la0k.cloudflarestream.com/aa185f2fb87f4604697fe6c75fc6499d/manifest/stream_tc60a9a5a2a6449c6c511f183e3408992_r1361560517.m3u8?llhlsHBs=0.9
